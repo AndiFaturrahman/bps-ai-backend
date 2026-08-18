@@ -86,6 +86,15 @@ Berdasarkan data di atas dan pertanyaan user, buat respons JSON:
      "region": "Wilayah",
      "period": "Periode data"
   }},
+  "chart_payload": {{
+     "type": "line | bar",
+     "title": "Judul grafik tren/komparasi",
+     "unit": "Satuan angka (cth: %, Juta Jiwa, Triliun Rupiah)",
+     "data": [
+        {{"label": "Label 1 (cth: Jan 24 / 2021)", "value": 2.57}},
+        {{"label": "Label 2 (cth: Feb 24 / 2022)", "value": 2.75}}
+     ]
+  }},
   "citations": [
     {{
       "title": "Judul BRS/Publikasi rujukan BPS",
@@ -99,6 +108,7 @@ Aturan:
 - PRIORITASKAN data dari BPS API yang diberikan.
 - Jika data BPS tidak memuat angka yang dicari, gunakan data proyeksi/sensus resmi BPS yang Anda ketahui.
 - data_payload: Jika ada 1 nilai indikator makro spesifik yang jelas (misal: "2,88%", "284,43 Juta Jiwa"), isi dengan lengkap. Jika TIDAK ADA angka indikator tunggal yang spesifik (misal penjelasan umum, metodologi, atau data kategori tabel luas), WAJIB set "data_payload": null (JANGAN membuat nilai "-" atau "null").
+- chart_payload: Jika user menanyakan data tren/deret waktu (misal tren inflasi, pertumbuhan ekonomi, deret tahun/bulan) ATAU ada rangkaian data multi-periode/multi-kategori, WAJIB buat chart_payload dengan array data numeric yang valid (minimal 2 titik data). Jika TIDAK ADA data deret/grafik, set "chart_payload": null.
 - Jawab dalam Bahasa Indonesia yang jelas, profesional, dan mudah dipahami.
 - Output WAJIB JSON murni.
 """
@@ -108,12 +118,14 @@ RESPONSE_WITHOUT_DATA_PROMPT = """
 Anda adalah BPS AI Assistant resmi (Badan Pusat Statistik Republik Indonesia).
 Prinsip utama Anda:
 1. Menjawab pertanyaan seputar data statistik, istilah, metodologi, dan layanan BPS.
-2. Output WAJIB berupa JSON murni:
+2. Jika pengguna menanyakan tren data statistik resmi (misal: "tren pertumbuhan ekonomi 5 tahun terakhir"), berikan estimasi data resmi BPS beserta chart_payload.
+3. Output WAJIB berupa JSON murni:
 {{
   "status": "success | clarify | out_of_scope | no_evidence",
   "intent": "numeric | knowledge | simple",
   "response_text": "Penjelasan naratif.",
   "data_payload": null,
+  "chart_payload": null,
   "citations": [
     {{
       "title": "Sumber BPS",
@@ -132,11 +144,20 @@ Aturan:
 
 def _generate_with_fallback(contents, system_instruction, response_mime_type="application/json", temperature=0.2):
     """
-    Menjalankan inferensi dengan fallback berantai ke beberapa model
-    untuk mencegah kendala 503 (server overloaded) saat live demo.
+    Menjalankan inferensi dengan fallback berantai ke berbagai model
+    untuk mencegah kendala 503 (server overloaded) dan 429 quota.
     """
     client = _get_gemini_client()
-    models = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest']
+    models = [
+        'gemini-3.7-flash',
+        'gemini-3.5-flash',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3-flash-preview',
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
+    ]
     last_error = None
     for model_name in models:
         try:
@@ -230,6 +251,17 @@ async def chat_endpoint(req: ChatRequest):
             val = str(dp.get("value", "")).strip()
             if not val or val == "-" or val.lower() == "null" or val.lower() == "none":
                 parsed_result["data_payload"] = None
+        else:
+            parsed_result["data_payload"] = None
+
+        # Sanitasi chart_payload jika data tidak lengkap
+        cp = parsed_result.get("chart_payload")
+        if cp and isinstance(cp, dict):
+            chart_data = cp.get("data")
+            if not isinstance(chart_data, list) or len(chart_data) < 2:
+                parsed_result["chart_payload"] = None
+        else:
+            parsed_result["chart_payload"] = None
                 
         return parsed_result
 
@@ -239,6 +271,7 @@ async def chat_endpoint(req: ChatRequest):
             "intent": "simple",
             "response_text": f"Terjadi kendala pada gateway LLM: {str(e)}",
             "data_payload": None,
+            "chart_payload": None,
             "citations": [],
             "clarification_options": []
         }
