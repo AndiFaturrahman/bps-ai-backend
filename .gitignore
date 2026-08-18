@@ -1,0 +1,14 @@
+# Virtual Environment
+bps/
+venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables
+.env
+.env.local
