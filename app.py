@@ -33,6 +33,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    return {"status": "online", "service": "BPS AI Gateway Service", "version": "1.0.0"}
+
 # ── Request Model ────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     query: str
@@ -183,6 +188,7 @@ def _clean_and_parse_json(text: str) -> dict:
 # ── Chat Endpoint ────────────────────────────────────────────────────
 
 @app.post("/api/v1/chat")
+@app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     try:
         # ── STEP 1: Extract Intent ───────────────────────────────
