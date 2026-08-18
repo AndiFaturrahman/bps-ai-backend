@@ -98,6 +98,7 @@ Berdasarkan data di atas dan pertanyaan user, buat respons JSON:
 Aturan:
 - PRIORITASKAN data dari BPS API yang diberikan.
 - Jika data BPS tidak memuat angka yang dicari, gunakan data proyeksi/sensus resmi BPS yang Anda ketahui.
+- data_payload: Jika ada 1 nilai indikator makro spesifik yang jelas (misal: "2,88%", "284,43 Juta Jiwa"), isi dengan lengkap. Jika TIDAK ADA angka indikator tunggal yang spesifik (misal penjelasan umum, metodologi, atau data kategori tabel luas), WAJIB set "data_payload": null (JANGAN membuat nilai "-" atau "null").
 - Jawab dalam Bahasa Indonesia yang jelas, profesional, dan mudah dipahami.
 - Output WAJIB JSON murni.
 """
@@ -221,7 +222,16 @@ async def chat_endpoint(req: ChatRequest):
             system_instruction=system_prompt,
             temperature=0.2,
         )
-        return _clean_and_parse_json(final_response.text)
+        parsed_result = _clean_and_parse_json(final_response.text)
+        
+        # Sanitasi data_payload jika berisi nilai kosong/null string
+        dp = parsed_result.get("data_payload")
+        if dp and isinstance(dp, dict):
+            val = str(dp.get("value", "")).strip()
+            if not val or val == "-" or val.lower() == "null" or val.lower() == "none":
+                parsed_result["data_payload"] = None
+                
+        return parsed_result
 
     except Exception as e:
         return {
