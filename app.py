@@ -9,6 +9,14 @@ from google import genai
 from google.genai import types
 
 from bps_client import BpsApiClient
+try:
+    from rag_retriever import retrieve_rag_context, get_rag_citations
+    _RAG_ENABLED = True
+except Exception as _rag_err:
+    print(f'[RAG] Module not available: {_rag_err}')
+    _RAG_ENABLED = False
+    def retrieve_rag_context(q, **kw): return ''
+    def get_rag_citations(q, **kw): return []
 
 def _get_gemini_client():
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -110,25 +118,28 @@ Output HANYA JSON murni.
 
 RESPONSE_WITH_DATA_PROMPT = """
 Anda adalah STATIX BPS AI Assistant resmi (Badan Pusat Statistik Republik Indonesia).
-Asisten analitik statistik paling cerdas, akurat, dan profesional di Indonesia.
+Asisten analitik statistik PALING CERDAS, akurat, dan profesional di Indonesia.
 
-Pimpinan BPS:
+PIMPINAN BPS RESMI:
 - Kepala BPS RI: Amalia Adininggar Widyasanti, ST, M.Si, M.Eng, Ph.D
 - Wakil Kepala BPS RI: Dr. Sonny Harry B Harmadi, SE, ME, CRGP
 - Kepala BPS Sulteng: Daryanto, S.Si., M.M.
 
-DATA RESMI BPS API:
+DATA TERSEDIA (KOMBINASI BPS API + RAG KNOWLEDGE BASE):
 --- DATA BPS ---
 {bps_data}
 --- END DATA ---
 
-INSTRUKSI:
-1. Gunakan ANGKA NYATA dari DATA BPS di atas, BUKAN dari pengetahuan umum.
-2. Jika data yang ada tahun 2026 tapi user tanya 2025: JUJUR katakan data terbaru yang tersedia adalah tahun tersebut.
-3. JANGAN mengarang angka. JANGAN bilang data tidak tersedia jika ada di atas.
-4. Untuk perbandingan wilayah: buat tabel markdown DAN chart_payload dengan data kedua wilayah.
-5. citations: gunakan pdf_url ASLI dari field pdf_url di data. URL yang mengandung "webapi.bps.go.id/download.php" adalah URL PDF langsung yang valid.
-6. Berikan 3 suggested_follow_ups cerdas.
+INSTRUKSI KETAT (WAJIB DIIKUTI):
+1. GUNAKAN ANGKA NYATA dari data di atas. Prioritaskan DATA LIVE BPS API, diperkuat KONTEKS RAG.
+2. KEJUJURAN TAHUN: Jika data tahun 2025 tidak ada tapi ada 2024 atau 2026, katakan JELAS "Data terbaru yang tersedia adalah [tahun]."
+3. JANGAN MENGARANG ANGKA. Jika tidak ada angka spesifik, katakan "data tidak tersedia".
+4. PERBANDINGAN WILAYAH: SELALU buat tabel markdown + chart_payload dengan kedua wilayah.
+5. SUMBER SPESIFIK: citations = gunakan pdf_url ASLI dari data. Cantumkan judul PERSIS BRS yang relevan.
+6. DATA RAG: Jika ada data historis dari RAG (misal "tren 2015-2025"), gunakan untuk memberikan konteks mendalam.
+7. ANGKA DARI RAG: Jika RAG punya angka spesifik yang relevan (kemiskinan, IPM, inflasi per wilayah per tahun), SEBUTKAN dengan jelas.
+8. Berikan 3 suggested_follow_ups yang spesifik dan cerdas.
+9. Gunakan emoji, tabel markdown, dan heading yang menarik dalam response_text.
 
 FORMAT JSON WAJIB (output JSON murni, tanpa code block):
 {
@@ -162,13 +173,14 @@ FORMAT JSON WAJIB (output JSON murni, tanpa code block):
 
 RESPONSE_WITHOUT_DATA_PROMPT = """
 Anda adalah STATIX BPS AI Assistant resmi (Badan Pusat Statistik Republik Indonesia).
-Asisten statistik profesional dan akurat.
+Asisten analitik statistik profesional, akurat, dan cerdas.
 
-Pimpinan BPS:
+PIMPINAN BPS RESMI:
 - Kepala BPS RI: Amalia Adininggar Widyasanti, ST, M.Si, M.Eng, Ph.D
 - Kepala BPS Sulteng: Daryanto, S.Si., M.M.
 
-Jawab pertanyaan tentang metodologi, istilah, profil BPS. Berikan 3 suggested_follow_ups cerdas.
+Jawab berdasarkan pengetahuan BPS resmi. Gunakan metodologi, istilah, dan profil yang benar.
+Berikan 3 suggested_follow_ups spesifik dan cerdas tentang statistik BPS.
 
 FORMAT JSON WAJIB (output JSON murni):
 {
@@ -298,8 +310,30 @@ async def chat_endpoint(req: ChatRequest):
                         deduped.append(item)
                 bps_data_text = json.dumps(deduped[:10], ensure_ascii=False, indent=2)
 
+        # === RAG Context Enrichment ===
+        rag_context = ''
+        rag_cits = []
+        if _RAG_ENABLED:
+            try:
+                rag_context = retrieve_rag_context(req.query, top_k=5, min_score=0.35)
+                rag_cits = get_rag_citations(req.query, top_k=3, min_score=0.40)
+                if rag_context:
+                    print(f'[RAG] Found context ({len(rag_context)} chars) for: {req.query[:60]}')
+            except Exception as _re:
+                print(f'[RAG] retrieval error: {_re}')
+
+        # === Combine BPS API + RAG into one enriched data block ===
+        combined_data = ''
         if bps_data_text:
-            system_prompt = RESPONSE_WITH_DATA_PROMPT.format(bps_data=bps_data_text)
+            combined_data += f'=== DATA LIVE BPS API ===\n{bps_data_text}\n\n'
+        if rag_context:
+            combined_data += f'=== KONTEKS RAG VECTOR DB (DATA HISTORIS + METODOLOGI) ===\n{rag_context}\n'
+
+        if combined_data:
+            system_prompt = RESPONSE_WITH_DATA_PROMPT.format(bps_data=combined_data)
+        elif rag_context:
+            # RAG found context even if BPS API returned nothing
+            system_prompt = RESPONSE_WITH_DATA_PROMPT.format(bps_data=f'=== KONTEKS RAG KNOWLEDGE BASE ===\n{rag_context}')
         else:
             system_prompt = RESPONSE_WITHOUT_DATA_PROMPT
 
@@ -343,15 +377,23 @@ async def chat_endpoint(req: ChatRequest):
 
         citations = parsed_result.get("citations", [])
         sanitized = []
+        seen_titles = set()
         for c in citations:
             title = c.get("title", "").strip()
-            if title:
+            if title and title not in seen_titles:
+                seen_titles.add(title)
                 sanitized.append({
                     "title": title,
                     "url": c.get("url", ""),
                     "release_date": c.get("release_date", ""),
                     "source_name": c.get("source_name", "Badan Pusat Statistik"),
                 })
+        # Merge RAG citations (tambahkan yang belum ada)
+        for rc in rag_cits:
+            rt = rc.get("title", "").strip()
+            if rt and rt not in seen_titles:
+                seen_titles.add(rt)
+                sanitized.append(rc)
         parsed_result["citations"] = sanitized if sanitized else [{
             "title": "Portal Resmi BPS",
             "url": "https://www.bps.go.id",
