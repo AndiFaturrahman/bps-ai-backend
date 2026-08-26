@@ -84,36 +84,67 @@ def _resolve_domain(region_name: str) -> str:
     return REGION_DOMAIN_MAP.get(region_name.strip().lower(), "0000")
 
 INTENT_EXTRACTION_PROMPT = """
-Anda adalah parser intent untuk BPS AI Assistant Indonesia.
-Dari pertanyaan user, extract ke JSON MURNI:
+Anda adalah parser intent CERDAS untuk STATIX BPS AI Assistant Indonesia.
+Analisis pertanyaan user dan extract ke JSON MURNI.
 
+OUTPUT FORMAT:
 {
-  "intent": "numeric | knowledge | publication | comparison | out_of_scope",
+  "intent": "numeric | comparison | knowledge | personnel | publication | out_of_scope",
   "keywords": ["kata kunci 1", "kata kunci 2"],
   "keywords_secondary": ["kata kunci alternatif"],
   "data_source": "pressrelease | statictable | publication | none",
-  "regions": ["nama wilayah 1", "nama wilayah 2"],
-  "domain_ids": ["kode BPS 1", "kode BPS 2"],
+  "regions": ["nama wilayah"],
+  "domain_ids": ["kode BPS"],
   "needs_bps_data": true,
+  "needs_rag_only": false,
   "is_comparison": false,
   "time_reference": "terbaru | 2025 | 2024 | historis | null"
 }
 
-ATURAN:
-- Angka/indikator terbaru (inflasi, PDB, kemiskinan, IPM, NTP, pengangguran): intent="numeric", data_source="pressrelease"
-- 2+ wilayah dibandingkan: intent="comparison", is_comparison=true
-- Tabel historis multi-tahun: data_source="statictable"
-- Publikasi/buku: data_source="publication"
-- Definisi/metodologi: intent="knowledge", needs_bps_data=false
-- Luar domain BPS: intent="out_of_scope", needs_bps_data=false
+ATURAN INTENT (WAJIB IKUTI URUTAN PRIORITAS):
 
-KODE DOMAIN:
+1. PERSONNEL (needs_rag_only=true, needs_bps_data=false, data_source="none"):
+   Semua pertanyaan tentang ORANG, JABATAN, PIMPINAN, PEGAWAI BPS:
+   - "siapa kepala/ketua/pimpinan BPS [wilayah]"
+   - "siapa yang menjabat sebagai..."
+   - "siapa nama kepala BPS..."
+   - "profil pejabat BPS"
+   - "struktur organisasi BPS"
+   CONTOH: "siapa ketua BPS Kota Palu" -> intent="personnel", needs_rag_only=true
+
+2. KNOWLEDGE (needs_rag_only=true, needs_bps_data=false, data_source="none"):
+   - Definisi/pengertian istilah statistik (IPM, TPT, inflasi, GK, dll)
+   - Metodologi survei (SUSENAS, SAKERNAS, Sensus)
+   - Cara menghitung indikator
+   - Sejarah/profil lembaga BPS
+   - Pertanyaan umum tanpa angka spesifik
+
+3. NUMERIC (needs_bps_data=true, data_source="pressrelease"):
+   - Angka/indikator TERBARU: inflasi, kemiskinan, IPM, NTP, PDRB, pengangguran, gini
+   - Pertanyaan "berapa [indikator] [wilayah]"
+   - Data terkini, update terakhir
+
+4. COMPARISON (needs_bps_data=true, is_comparison=true):
+   - Membandingkan 2+ wilayah: "bandingkan X dengan Y"
+   - "perbedaan X dan Y"
+   - "lebih tinggi mana antara..."
+
+5. PUBLICATION (needs_bps_data=true, data_source="publication"):
+   - Mencari buku/publikasi/laporan BPS
+   - "download publikasi"
+
+6. OUT_OF_SCOPE (needs_bps_data=false, data_source="none"):
+   - Tidak ada hubungan dengan BPS atau statistik Indonesia
+
+KODE DOMAIN BPS:
 - Nasional: "0000", Sulawesi Tengah: "7200", Jakarta: "3100"
 - Jawa Barat: "3200", Jawa Tengah: "3300", Jawa Timur: "3500"
-- Sulawesi Selatan: "7300", Sumatera Utara: "1200", Bali: "5100"
-- Kalimantan Timur: "6400"
+- Bali: "5100", Sulawesi Selatan: "7300", Sumatera Utara: "1200"
+- Kalimantan Timur: "6400", DIY: "3400", Riau: "1400"
+- Kota Palu: "7271", Kab Donggala: "7203", Kab Poso: "7202"
+- Kab Banggai: "7201", Kab Morowali: "7206"
 
-Output HANYA JSON murni.
+Output HANYA JSON murni, tanpa penjelasan tambahan.
 """
 
 RESPONSE_WITH_DATA_PROMPT = """
@@ -260,11 +291,18 @@ async def chat_endpoint(req: ChatRequest):
         intent_data = _clean_and_parse_json(intent_response.text)
 
         needs_bps = intent_data.get("needs_bps_data", False)
+        needs_rag_only = intent_data.get("needs_rag_only", False)
+        intent_type = intent_data.get("intent", "knowledge")
         data_source = intent_data.get("data_source", "none")
         keywords = intent_data.get("keywords", [])
         keywords_secondary = intent_data.get("keywords_secondary", [])
         regions = intent_data.get("regions", ["Indonesia"])
         domain_ids = intent_data.get("domain_ids", [])
+
+        # PERSONNEL & KNOWLEDGE: skip BPS API, use RAG only
+        if intent_type in ("personnel", "knowledge") or needs_rag_only:
+            needs_bps = False
+            print(f"[ROUTER] Intent={intent_type} -> RAG-only mode (skip BPS API)")
 
         if not domain_ids:
             domain_ids = [_resolve_domain(r) for r in regions]
