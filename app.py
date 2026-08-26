@@ -125,6 +125,7 @@ Format JSON WAJIB:
 
 Aturan:
 - PRIORITASKAN data dari BPS API yang diberikan.
+- WAJIB berikan sitasi SANGAT SPESIFIK: Sebutkan Nomor Berita Resmi Statistik (BRS), Tanggal Rilis Resmi, dan nama dokumen publikasi PDF (DILARANG memberikan sitasi umum seperti 'Portal BPS' saja).
 - WAJIB sertakan suggested_follow_ups berupa 3 pertanyaan cerdas berikutnya yang relevan.
 - WAJIB gunakan tautan unduh PDF asli (pdf_url) dari data BPS jika tersedia pada field 'url' di citations.
 - data_payload: Jika ada 1 nilai indikator makro spesifik yang jelas, isi dengan lengkap. Jika tidak ada angka tunggal spesifik, set null.
