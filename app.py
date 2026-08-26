@@ -38,6 +38,7 @@ async def health_check():
 # ── Request Model ────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     query: str
+    history: list = []
 
 # ── System Prompts ───────────────────────────────────────────────────
 
@@ -149,14 +150,12 @@ def _generate_with_fallback(contents, system_instruction, response_mime_type="ap
     """
     client = _get_gemini_client()
     models = [
-        'gemini-3.7-flash',
-        'gemini-3.5-flash',
         'gemini-3.6-flash',
-        'gemini-3.5-flash-lite',
+        'gemini-3.5-flash',
         'gemini-3.1-flash-lite',
-        'gemini-3-flash-preview',
         'gemini-flash-latest',
         'gemini-flash-lite-latest',
+        'gemini-3.7-flash',
     ]
     last_error = None
     for model_name in models:
