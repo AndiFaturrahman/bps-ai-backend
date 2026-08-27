@@ -227,30 +227,35 @@ FORMAT JSON WAJIB (output JSON murni):
 """
 
 def _generate_with_fallback(contents, system_instruction, response_mime_type="application/json", temperature=0.2):
+    import time
     client = _get_gemini_client()
     models = [
         'gemini-2.5-flash',
         'gemini-2.0-flash',
         'gemini-1.5-flash',
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
-        'gemini-flash-latest',
+        'gemini-2.0-flash-lite',
+        'gemini-1.5-pro',
     ]
     last_error = None
     for model_name in models:
-        try:
-            return client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type=response_mime_type,
-                    temperature=temperature,
-                ),
-            )
-        except Exception as e:
-            last_error = e
-            continue
+        for attempt in range(2):
+            try:
+                return client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type=response_mime_type,
+                        temperature=temperature,
+                    ),
+                )
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                if '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
+                    time.sleep(1.5)
+                else:
+                    break
     raise last_error
 
 
@@ -368,10 +373,10 @@ async def chat_endpoint(req: ChatRequest):
             combined_data += f'=== KONTEKS RAG VECTOR DB (DATA HISTORIS + METODOLOGI) ===\n{rag_context}\n'
 
         if combined_data:
-            system_prompt = RESPONSE_WITH_DATA_PROMPT.format(bps_data=combined_data)
+            system_prompt = RESPONSE_WITH_DATA_PROMPT.replace("{bps_data}", combined_data)
         elif rag_context:
             # RAG found context even if BPS API returned nothing
-            system_prompt = RESPONSE_WITH_DATA_PROMPT.format(bps_data=f'=== KONTEKS RAG KNOWLEDGE BASE ===\n{rag_context}')
+            system_prompt = RESPONSE_WITH_DATA_PROMPT.replace("{bps_data}", f"=== KONTEKS RAG KNOWLEDGE BASE ===\n{rag_context}")
         else:
             system_prompt = RESPONSE_WITHOUT_DATA_PROMPT
 
